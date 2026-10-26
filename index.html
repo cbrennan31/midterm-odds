@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Midterm odds · Kalshi</title>
+<style>
+:root{--bg:#f2f4f7;--card:#fff;--ink:#14181f;--mute:#667085;--line:#dde1e8;--dem:#1f5fbf;--rep:#c0392b;--tie:#7a6a2e;--bar:#e6e9ef}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1116;--card:#171b22;--ink:#eef1f6;--mute:#8e98a8;--line:#272d38;--dem:#6ea2f5;--rep:#f07a6c;--tie:#d8c36a;--bar:#272d38}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top) 8px env(safe-area-inset-bottom)}
+header{position:sticky;top:0;background:var(--bg);padding:10px 2px 8px;z-index:2;display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}
+h1{font-size:17px;margin:0}
+#stamp{font-size:12px;color:var(--mute);font-variant-numeric:tabular-nums}
+#stamp.err{color:var(--rep)}
+h2{font-size:13px;margin:14px 2px 6px;color:var(--mute);font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+@media (min-width:700px){.grid{grid-template-columns:repeat(auto-fill,minmax(170px,1fr))}}
+.panel{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--mute);border-radius:6px;padding:8px 8px 9px;min-height:104px}
+.panel.dem{border-left-color:var(--dem)}.panel.rep{border-left-color:var(--rep)}.panel.tie{border-left-color:var(--tie)}
+.panel.stale{opacity:.6}
+.t{font-weight:700;font-size:13px;margin-bottom:6px}
+.dem .t{color:var(--dem)}.rep .t{color:var(--rep)}.tie .t{color:var(--tie)}
+.c{margin-top:5px}
+.row{display:flex;justify-content:space-between;gap:6px;font-size:12px}
+.n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.p{font-weight:700;font-variant-numeric:tabular-nums}
+.bar{height:4px;background:var(--bar);border-radius:2px;margin-top:2px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--mute)}
+.c.D .p{color:var(--dem)}.c.D .bar i{background:var(--dem)}
+.c.R .p{color:var(--rep)}.c.R .bar i{background:var(--rep)}
+.msg{font-size:12px;color:var(--mute)}
+footer{font-size:11px;color:var(--mute);padding:14px 2px 18px}
+</style>
+</head>
+<body>
+<header><h1>Midterm odds</h1><span id="stamp">Loading…</span></header>
+<h2>Senate</h2><div class="grid" id="senate"></div>
+<h2>Governor</h2><div class="grid" id="gov"></div>
+<footer>Market-implied probabilities from Kalshi, refreshed every minute. Not betting or financial advice.</footer>
+<script>
+const API = "https://api.elections.kalshi.com/trade-api/v2";
+const SEN = {AK:"Alaska",MS:"Mississippi",SC:"South Carolina",TX:"Texas",IA:"Iowa",ME:"Maine",MI:"Michigan",NE:"Nebraska",KS:"Kansas",NC:"North Carolina",GA:"Georgia",OH:"Ohio"};
+const GOV = {OH:"Ohio",TX:"Texas",GA:"Georgia",IA:"Iowa"};
+// Each race lists event tickers to try in order; the first that returns markets is used.
+const RACES = [
+  ...Object.entries(SEN).map(([s,n])=>({id:"S"+s,grid:"senate",title:n+" Senate",tickers:["SENATE"+s+"-26"]})),
+  ...Object.entries(GOV).map(([s,n])=>({id:"G"+s,grid:"gov",title:n+" Governor",tickers:["GOVPARTY"+s+"-26","GOV"+s+"-26"]}))
+];
+// Party lookup by name fragment, used only when the market label doesn't say the party.
+const PARTY = {talarico:"D",paxton:"R","roger marshall":"R","adam hamilton":"D",acton:"D",ramaswamy:"R","sherrod brown":"D",husted:"R","roy cooper":"D",whatley:"R",graham:"R",collins:"R",peltola:"D","dan sullivan":"R",ossoff:"D","el-sayed":"D","mike rogers":"R",hinson:"R",turek:"D",ricketts:"R","rob sand":"D","hyde-smith":"R"};
+const state = {}; // race id -> {items, ok}
+
+function party(label){
+  const l = label.toLowerCase();
+  if (/democrat/.test(l)) return "D";
+  if (/republican/.test(l)) return "R";
+  for (const k in PARTY) if (l.includes(k)) return PARTY[k];
+  return "";
+}
+function num(v){ const x = parseFloat(v); return isNaN(x) ? null : x; }
+// Kalshi has returned prices as cents (ints) or dollar strings; normalise to 0-100.
+function pct(m){
+  const f = (c,d)=>{ const a = num(m[c]); if (a!=null) return a; const b = num(m[d]); return b!=null ? b*100 : null; };
+  const bid = f("yes_bid","yes_bid_dollars"), ask = f("yes_ask","yes_ask_dollars"), last = f("last_price","last_price_dollars");
+  if (bid && ask) return (bid+ask)/2;
+  return last ?? bid ?? ask ?? null;
+}
+async function getJSON(url){
+  const ctl = new AbortController(), t = setTimeout(()=>ctl.abort(), 15000);
+  try{ const r = await fetch(url,{signal:ctl.signal}); if(!r.ok) throw new Error(r.status); return await r.json(); }
+  finally{ clearTimeout(t); }
+}
+async function loadRace(r){
+  let net = false;
+  for (const tk of r.tickers){
+    try{
+      const d = await getJSON(`${API}/markets?event_ticker=${tk}&limit=50`);
+      const ms = (d.markets||[]).filter(m=>m.status!=="finalized"&&m.status!=="settled");
+      const items = ms.map(m=>{
+        const label = m.yes_sub_title || m.subtitle || m.title || m.ticker;
+        return {label, p:pct(m), party:party(label+" "+(m.custom_strike?JSON.stringify(m.custom_strike):""))};
+      }).filter(i=>i.p!=null).sort((a,b)=>b.p-a.p);
+      if (items.length) return {items, ok:true};
+    }catch(e){
+      console.warn("Kalshi request failed for", tk, e);
+      if (e instanceof TypeError || e.name==="AbortError") net = true;
+    }
+  }
+  return {failed: net ? "net" : "empty"};
+}
+function esc(s){ return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function render(r){
+  const s = state[r.id], el = document.getElementById(r.id);
+  if (!el) return;
+  let cls = "", body = '<div class="msg">Loading…</div>';
+  if (s && s.items){
+    const [a,b] = s.items;
+    cls = a.party==="D"?"dem":a.party==="R"?"rep":"";
+    if (b && Math.abs(a.p-b.p)<10) cls = "tie";
+    body = s.items.slice(0,3).map(i=>{
+      const nm = i.label.replace(/\s*\((Democratic|Republican)[^)]*\)/i,"");
+      return `<div class="c ${i.party}"><div class="row"><span class="n">${esc(nm)}</span><span class="p">${Math.round(i.p)}%</span></div><div class="bar"><i style="width:${Math.min(100,i.p)}%"></i></div></div>`;
+    }).join("");
+    if (!s.ok) cls += " stale";
+  } else if (s && s.failed){ body = '<div class="msg">' + (s.failed==="net" ? "Can’t reach Kalshi" : "No market data found") + '</div>'; }
+  el.className = "panel "+cls;
+  el.innerHTML = `<div class="t">${esc(r.title)}</div>${body}`;
+}
+function build(){
+  for (const r of RACES){
+    const d = document.createElement("div"); d.id = r.id; d.className = "panel";
+    document.getElementById(r.grid).appendChild(d); render(r);
+  }
+}
+async function refresh(){
+  const results = await Promise.all(RACES.map(loadRace));
+  let good = 0;
+  RACES.forEach((r,i)=>{
+    if (results[i].items){ state[r.id] = results[i]; good++; }
+    else if (state[r.id] && state[r.id].items){ state[r.id].ok = false; }
+    else state[r.id] = results[i];
+    render(r);
+  });
+  const st = document.getElementById("stamp");
+  if (good){
+    st.textContent = "Last updated " + new Date().toLocaleTimeString([], {hour:"numeric",minute:"2-digit",second:"2-digit"}) + (good<RACES.length?` · ${RACES.length-good} unavailable`:"");
+    st.className = "";
+  } else {
+    st.textContent = "Couldn't reach Kalshi · retrying in 1 min";
+    st.className = "err";
+  }
+}
+build(); refresh(); setInterval(refresh, 60000);
+document.addEventListener("visibilitychange",()=>{ if(!document.hidden) refresh(); });
+</script>
+</body>
+</html>
