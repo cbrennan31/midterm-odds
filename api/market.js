@@ -19,7 +19,7 @@ module.exports = async (req, res) => {
   for (const base of UPSTREAMS) {
     try {
       const r = await fetch(`${base}/markets?event_ticker=${encodeURIComponent(ticker)}&limit=50`, {
-        headers: { Accept: "application/json", "User-Agent": "midterm-odds-proxy/1.0" },
+        headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36", "Accept-Language": "en-US,en;q=0.9" },
       });
       if (r.ok) {
         const data = await r.json();
